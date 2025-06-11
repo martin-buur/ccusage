@@ -52,17 +52,34 @@ export const sessionCommand = define({
 		if (ctx.values.json) {
 			// Output JSON format
 			const jsonOutput = {
-				sessions: sessionData.map(data => ({
-					projectPath: data.projectPath,
-					sessionId: data.sessionId,
-					inputTokens: data.inputTokens,
-					outputTokens: data.outputTokens,
-					cacheCreationTokens: data.cacheCreationTokens,
-					cacheReadTokens: data.cacheReadTokens,
-					totalTokens: getTotalTokens(data),
-					totalCost: data.totalCost,
-					lastActivity: data.lastActivity,
-				})),
+				sessions: sessionData.map((data) => {
+					const sessionStartISO = data.sessionId.replace('session-', '');
+					// Convert from session-2025-06-09T14-50-32 format to proper ISO UTC
+					const properISO = sessionStartISO.replace(/T(\d{2})-(\d{2})-(\d{2})/, 'T$1:$2:$3Z');
+					const sessionStartDate = new Date(properISO);
+					return {
+						projectPath: data.projectPath,
+						sessionId: data.sessionId,
+						sessionStart: properISO,
+						sessionStartLocal: sessionStartDate.toLocaleString('en-US', {
+							month: 'numeric',
+							day: 'numeric',
+							year: 'numeric',
+							hour: 'numeric',
+							minute: '2-digit',
+							second: '2-digit',
+							hour12: true,
+							timeZoneName: 'short',
+						}),
+						inputTokens: data.inputTokens,
+						outputTokens: data.outputTokens,
+						cacheCreationTokens: data.cacheCreationTokens,
+						cacheReadTokens: data.cacheReadTokens,
+						totalTokens: getTotalTokens(data),
+						totalCost: data.totalCost,
+						lastActivity: data.lastActivity,
+					};
+				}),
 				totals: createTotalsObject(totals),
 			};
 			log(JSON.stringify(jsonOutput, null, 2));
@@ -74,8 +91,7 @@ export const sessionCommand = define({
 			// Create table
 			const table = new Table({
 				head: [
-					'Project',
-					'Session',
+					'Session Start',
 					'Input',
 					'Output',
 					'Cache Create',
@@ -89,7 +105,6 @@ export const sessionCommand = define({
 				},
 				colAligns: [
 					'left',
-					'left',
 					'right',
 					'right',
 					'right',
@@ -100,20 +115,26 @@ export const sessionCommand = define({
 				],
 			});
 
-			let maxProjectLength = 0;
 			let maxSessionLength = 0;
 			for (const data of sessionData) {
-				const projectDisplay
-					= data.projectPath.length > 20
-						? `...${data.projectPath.slice(-17)}`
-						: data.projectPath;
-				const sessionDisplay = data.sessionId.split('-').slice(-2).join('-'); // Display last two parts of session ID
+				const sessionStartISO = data.sessionId.replace('session-', '');
+				// Convert from session-2025-06-09T14-50-32 format to proper ISO UTC
+				const properISO = sessionStartISO.replace(/T(\d{2})-(\d{2})-(\d{2})/, 'T$1:$2:$3Z');
+				const sessionStartDate = new Date(properISO);
+				const sessionDisplay = sessionStartDate.toLocaleString('en-US', {
+					month: 'numeric',
+					day: 'numeric',
+					year: 'numeric',
+					hour: 'numeric',
+					minute: '2-digit',
+					second: '2-digit',
+					hour12: true,
+					timeZoneName: 'short',
+				});
 
-				maxProjectLength = Math.max(maxProjectLength, projectDisplay.length);
 				maxSessionLength = Math.max(maxSessionLength, sessionDisplay.length);
 
 				table.push([
-					projectDisplay,
 					sessionDisplay,
 					formatNumber(data.inputTokens),
 					formatNumber(data.outputTokens),
@@ -127,8 +148,7 @@ export const sessionCommand = define({
 
 			// Add separator
 			table.push([
-				'─'.repeat(maxProjectLength), // For Project
-				'─'.repeat(maxSessionLength), // For Session
+				'─'.repeat(maxSessionLength), // For Session Start
 				'─'.repeat(12), // For Input Tokens
 				'─'.repeat(12), // For Output Tokens
 				'─'.repeat(12), // For Cache Create
@@ -141,7 +161,6 @@ export const sessionCommand = define({
 			// Add totals
 			table.push([
 				pc.yellow('Total'),
-				'', // Empty for Session column in totals
 				pc.yellow(formatNumber(totals.inputTokens)),
 				pc.yellow(formatNumber(totals.outputTokens)),
 				pc.yellow(formatNumber(totals.cacheCreationTokens)),

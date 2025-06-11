@@ -652,9 +652,16 @@ describe('loadSessionData', () => {
 		expect(result).toEqual([]);
 	});
 
-	test('extracts session info from file paths', async () => {
-		const mockData: UsageData = {
+	test('creates time-based sessions and extracts project info', async () => {
+		// Create data entries with timestamps more than 5 hours apart to ensure separate sessions
+		const mockData1: UsageData = {
 			timestamp: '2024-01-01T00:00:00Z',
+			message: { usage: { input_tokens: 100, output_tokens: 50 } },
+			costUSD: 0.01,
+		};
+
+		const mockData2: UsageData = {
+			timestamp: '2024-01-01T10:00:00Z', // 10 hours later - new session
 			message: { usage: { input_tokens: 100, output_tokens: 50 } },
 			costUSD: 0.01,
 		};
@@ -663,12 +670,12 @@ describe('loadSessionData', () => {
 			projects: {
 				'project1/subfolder': {
 					session123: {
-						'chat.jsonl': JSON.stringify(mockData),
+						'chat.jsonl': JSON.stringify(mockData1),
 					},
 				},
 				'project2': {
 					session456: {
-						'chat.jsonl': JSON.stringify(mockData),
+						'chat.jsonl': JSON.stringify(mockData2),
 					},
 				},
 			},
@@ -677,15 +684,16 @@ describe('loadSessionData', () => {
 		const result = await loadSessionData({ claudePath: fixture.path });
 
 		expect(result).toHaveLength(2);
-		expect(result.find(s => s.sessionId === 'session123')).toBeTruthy();
+		expect(result.find(s => s.sessionId === 'session-2024-01-01T00-00-00')).toBeTruthy();
 		expect(
-			result.find(s => s.projectPath === 'project1/subfolder'),
+			result.find(s => s.projectPath === 'project1/subfolder/session123'),
 		).toBeTruthy();
-		expect(result.find(s => s.sessionId === 'session456')).toBeTruthy();
-		expect(result.find(s => s.projectPath === 'project2')).toBeTruthy();
+		expect(result.find(s => s.sessionId === 'session-2024-01-01T10-00-00')).toBeTruthy();
+		expect(result.find(s => s.projectPath === 'project2/session456')).toBeTruthy();
 	});
 
-	test('aggregates session usage data', async () => {
+	test('aggregates session usage data within 5-hour window', async () => {
+		// Create data entries within a 5-hour window so they get grouped into one session
 		const mockData: UsageData[] = [
 			{
 				timestamp: '2024-01-01T00:00:00Z',
@@ -700,7 +708,7 @@ describe('loadSessionData', () => {
 				costUSD: 0.01,
 			},
 			{
-				timestamp: '2024-01-01T12:00:00Z',
+				timestamp: '2024-01-01T03:00:00Z', // 3 hours later - same session
 				message: {
 					usage: {
 						input_tokens: 200,
@@ -727,8 +735,8 @@ describe('loadSessionData', () => {
 
 		expect(result).toHaveLength(1);
 		const session = result[0];
-		expect(session?.sessionId).toBe('session1');
-		expect(session?.projectPath).toBe('project1');
+		expect(session?.sessionId).toBe('session-2024-01-01T00-00-00');
+		expect(session?.projectPath).toBe('project1/session1');
 		expect(session?.inputTokens).toBe(300); // 100 + 200
 		expect(session?.outputTokens).toBe(150); // 50 + 100
 		expect(session?.cacheCreationTokens).toBe(30); // 10 + 20
@@ -737,7 +745,8 @@ describe('loadSessionData', () => {
 		expect(session?.lastActivity).toBe('2024-01-01');
 	});
 
-	test('tracks versions', async () => {
+	test('tracks versions within same session', async () => {
+		// Create data entries within a 5-hour window with different versions
 		const mockData: UsageData[] = [
 			{
 				timestamp: '2024-01-01T00:00:00Z',
@@ -746,13 +755,13 @@ describe('loadSessionData', () => {
 				costUSD: 0.01,
 			},
 			{
-				timestamp: '2024-01-01T12:00:00Z',
+				timestamp: '2024-01-01T02:00:00Z', // 2 hours later - same session
 				message: { usage: { input_tokens: 200, output_tokens: 100 } },
 				version: '1.1.0',
 				costUSD: 0.02,
 			},
 			{
-				timestamp: '2024-01-01T18:00:00Z',
+				timestamp: '2024-01-01T04:00:00Z', // 4 hours later - same session
 				message: { usage: { input_tokens: 300, output_tokens: 150 } },
 				version: '1.0.0', // Duplicate version
 				costUSD: 0.03,
@@ -771,11 +780,13 @@ describe('loadSessionData', () => {
 
 		const result = await loadSessionData({ claudePath: fixture.path });
 
+		expect(result).toHaveLength(1);
 		const session = result[0];
 		expect(session?.versions).toEqual(['1.0.0', '1.1.0']); // Sorted and unique
 	});
 
 	test('sorts by last activity descending', async () => {
+		// Create sessions with different timestamps to test sorting
 		const sessions = [
 			{
 				sessionId: 'session1',
@@ -816,9 +827,10 @@ describe('loadSessionData', () => {
 
 		const result = await loadSessionData({ claudePath: fixture.path });
 
-		expect(result[0]?.sessionId).toBe('session3');
-		expect(result[1]?.sessionId).toBe('session1');
-		expect(result[2]?.sessionId).toBe('session2');
+		// Should be sorted by last activity descending: Jan 31, Jan 15, Jan 1
+		expect(result[0]?.sessionId).toBe('session-2024-01-31T00-00-00');
+		expect(result[1]?.sessionId).toBe('session-2024-01-15T00-00-00');
+		expect(result[2]?.sessionId).toBe('session-2024-01-01T00-00-00');
 	});
 
 	test('sorts by last activity ascending when order is \'asc\'', async () => {
@@ -865,9 +877,10 @@ describe('loadSessionData', () => {
 			order: 'asc',
 		});
 
-		expect(result[0]?.sessionId).toBe('session2'); // oldest first
-		expect(result[1]?.sessionId).toBe('session1');
-		expect(result[2]?.sessionId).toBe('session3'); // newest last
+		// Should be sorted by last activity ascending: Jan 1, Jan 15, Jan 31
+		expect(result[0]?.sessionId).toBe('session-2024-01-01T00-00-00'); // oldest first
+		expect(result[1]?.sessionId).toBe('session-2024-01-15T00-00-00');
+		expect(result[2]?.sessionId).toBe('session-2024-01-31T00-00-00'); // newest last
 	});
 
 	test('sorts by last activity descending when order is \'desc\'', async () => {
@@ -914,9 +927,62 @@ describe('loadSessionData', () => {
 			order: 'desc',
 		});
 
-		expect(result[0]?.sessionId).toBe('session3'); // newest first (same as default)
-		expect(result[1]?.sessionId).toBe('session1');
-		expect(result[2]?.sessionId).toBe('session2'); // oldest last
+		// Should be sorted by last activity descending: Jan 31, Jan 15, Jan 1
+		expect(result[0]?.sessionId).toBe('session-2024-01-31T00-00-00'); // newest first (same as default)
+		expect(result[1]?.sessionId).toBe('session-2024-01-15T00-00-00');
+		expect(result[2]?.sessionId).toBe('session-2024-01-01T00-00-00'); // oldest last
+	});
+
+	test('groups entries into sessions based on 5-hour windows', async () => {
+		// Create entries that test the 5-hour window logic
+		const mockData = [
+			{
+				timestamp: '2024-01-01T00:00:00Z',
+				message: { usage: { input_tokens: 100, output_tokens: 50 } },
+				costUSD: 0.01,
+			},
+			{
+				timestamp: '2024-01-01T02:00:00Z', // 2 hours later - same session
+				message: { usage: { input_tokens: 100, output_tokens: 50 } },
+				costUSD: 0.01,
+			},
+			{
+				timestamp: '2024-01-01T04:00:00Z', // 4 hours from start - same session
+				message: { usage: { input_tokens: 100, output_tokens: 50 } },
+				costUSD: 0.01,
+			},
+			{
+				timestamp: '2024-01-01T10:00:00Z', // 10 hours from start - new session
+				message: { usage: { input_tokens: 100, output_tokens: 50 } },
+				costUSD: 0.01,
+			},
+		];
+
+		await using fixture = await createFixture({
+			projects: {
+				project1: {
+					session1: {
+						'chat.jsonl': mockData.map(d => JSON.stringify(d)).join('\n'),
+					},
+				},
+			},
+		});
+
+		const result = await loadSessionData({ claudePath: fixture.path });
+
+		expect(result).toHaveLength(2);
+
+		// First session should have 3 entries (first 3 timestamps within 5 hours)
+		const firstSession = result.find(s => s.sessionId === 'session-2024-01-01T00-00-00');
+		expect(firstSession).toBeTruthy();
+		expect(firstSession?.inputTokens).toBe(300); // 100 + 100 + 100
+		expect(firstSession?.totalCost).toBe(0.03);
+
+		// Second session should have 1 entry (last timestamp starts new session)
+		const secondSession = result.find(s => s.sessionId === 'session-2024-01-01T10-00-00');
+		expect(secondSession).toBeTruthy();
+		expect(secondSession?.inputTokens).toBe(100);
+		expect(secondSession?.totalCost).toBe(0.01);
 	});
 
 	test('filters by date range based on last activity', async () => {
@@ -1152,6 +1218,7 @@ describe('data-loader cost calculation with real pricing', () => {
 
 	describe('loadSessionData with mixed schemas', () => {
 		test('should handle mixed cost sources in different sessions', async () => {
+			// Create sessions with timestamps more than 5 hours apart
 			const session1Data = {
 				timestamp: '2024-01-15T10:00:00Z',
 				message: { usage: { input_tokens: 1000, output_tokens: 500 } },
@@ -1159,7 +1226,7 @@ describe('data-loader cost calculation with real pricing', () => {
 			};
 
 			const session2Data = {
-				timestamp: '2024-01-16T10:00:00Z',
+				timestamp: '2024-01-15T20:00:00Z', // 10 hours later - new session
 				message: {
 					usage: { input_tokens: 2000, output_tokens: 1000 },
 					model: 'claude-sonnet-4-20250514',
@@ -1183,13 +1250,13 @@ describe('data-loader cost calculation with real pricing', () => {
 
 			expect(results).toHaveLength(2);
 
-			// Check session 1
-			const session1 = results.find(s => s.sessionId === 'session1');
+			// Check session 1 (based on timestamp)
+			const session1 = results.find(s => s.sessionId === 'session-2024-01-15T10-00-00');
 			expect(session1).toBeTruthy();
 			expect(session1?.totalCost).toBe(0.05);
 
-			// Check session 2
-			const session2 = results.find(s => s.sessionId === 'session2');
+			// Check session 2 (based on timestamp)
+			const session2 = results.find(s => s.sessionId === 'session-2024-01-15T20-00-00');
 			expect(session2).toBeTruthy();
 			expect(session2?.totalCost).toBeGreaterThan(0);
 		});

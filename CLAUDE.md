@@ -55,7 +55,7 @@ This is a CLI tool that analyzes Claude Code usage data from local JSONL files s
 
 - Raw usage data is parsed from JSONL with timestamp, token counts, and pre-calculated costs
 - Data is aggregated into daily summaries, monthly summaries, or session summaries
-- Sessions are identified by directory structure: `projects/{project}/{session}/{file}.jsonl`
+- Sessions are identified by directory structure: `projects/{project}/{file}.jsonl`
 
 **External Dependencies:**
 

@@ -264,25 +264,21 @@ export async function loadSessionData(
 	// Use PricingFetcher with using statement for automatic cleanup
 	using fetcher = mode === 'display' ? null : new PricingFetcher();
 
-	// Collect all valid data entries with session info first
+	// Collect all valid data entries with project info first
 	const allEntries: Array<{
 		data: UsageData;
-		sessionKey: string;
-		sessionId: string;
 		projectPath: string;
 		cost: number;
-		timestamp: string;
+		timestamp: Date;
 	}> = [];
 
 	for (const file of files) {
-		// Extract session info from file path
+		// Extract project path from file path
 		const relativePath = path.relative(claudeDir, file);
 		const parts = relativePath.split(path.sep);
 
-		// Session ID is the directory name containing the JSONL file
-		const sessionId = parts[parts.length - 2] ?? 'unknown';
-		// Project path is everything before the session ID
-		const joinedPath = parts.slice(0, -2).join(path.sep);
+		// Project path is everything before the filename
+		const joinedPath = parts.slice(0, -1).join(path.sep);
 		const projectPath = joinedPath.length > 0 ? joinedPath : 'Unknown Project';
 
 		const content = await readFile(file, 'utf-8');
@@ -300,18 +296,15 @@ export async function loadSessionData(
 				}
 				const data = result.output;
 
-				const sessionKey = `${projectPath}/${sessionId}`;
 				const cost = fetcher != null
 					? await calculateCostForEntry(data, mode, fetcher)
 					: data.costUSD ?? 0;
 
 				allEntries.push({
 					data,
-					sessionKey,
-					sessionId,
 					projectPath,
 					cost,
-					timestamp: data.timestamp,
+					timestamp: new Date(data.timestamp),
 				});
 			}
 			catch {
@@ -320,23 +313,63 @@ export async function loadSessionData(
 		}
 	}
 
-	// Group by session using Object.groupBy
-	const groupedBySessions = groupBy(
-		allEntries,
-		entry => entry.sessionKey,
-	);
+	// Sort all entries by timestamp to group into sessions
+	const sortedEntries = sort(allEntries).asc(entry => entry.timestamp.getTime());
+
+	// Group entries into sessions based on 5-hour windows
+	const sessionGroups: Array<typeof allEntries> = [];
+	let currentSession: typeof allEntries = [];
+	let sessionStartTime: Date | null = null;
+
+	for (const entry of sortedEntries) {
+		if (sessionStartTime === null) {
+			// Start the first session
+			sessionStartTime = entry.timestamp;
+			currentSession = [entry];
+		}
+		else {
+			// Check if this entry is within 5 hours of the session start
+			const hoursDiff = (entry.timestamp.getTime() - sessionStartTime.getTime()) / (1000 * 60 * 60);
+
+			if (hoursDiff <= 5) {
+				// Add to current session
+				currentSession.push(entry);
+			}
+			else {
+				// Start a new session
+				sessionGroups.push(currentSession);
+				sessionStartTime = entry.timestamp;
+				currentSession = [entry];
+			}
+		}
+	}
+
+	// Don't forget to add the last session
+	if (currentSession.length > 0) {
+		sessionGroups.push(currentSession);
+	}
 
 	// Aggregate each session group
-	const results = Object.entries(groupedBySessions)
-		.map(([_, entries]) => {
-			if (entries == null) {
+	const results = sessionGroups
+		.map((entries) => {
+			if (entries.length === 0) {
 				return undefined;
 			}
 
-			// Find the latest timestamp for lastActivity
-			const latestEntry = entries.reduce((latest, current) =>
-				current.timestamp > latest.timestamp ? current : latest,
-			);
+			// Find the earliest and latest timestamps for session info
+			const earliestEntry = entries[0];
+			const latestEntry = entries[entries.length - 1];
+
+			if (earliestEntry == null || latestEntry == null) {
+				return undefined;
+			}
+
+			// Generate session ID based on start time
+			const sessionId = `session-${earliestEntry.timestamp.toISOString().slice(0, 19).replace(/:/g, '-')}`;
+
+			// Collect all unique project paths in this session
+			const projectPaths = Array.from(new Set(entries.map(entry => entry.projectPath))).sort();
+			const projectPath = projectPaths.length === 1 ? (projectPaths[0] ?? 'Unknown Project') : `Multiple (${projectPaths.length})`;
 
 			// Collect all unique versions
 			const versionSet = new Set<string>();
@@ -349,8 +382,8 @@ export async function loadSessionData(
 			// Aggregate totals
 			const aggregated = entries.reduce(
 				(acc, entry) => ({
-					sessionId: latestEntry.sessionId,
-					projectPath: latestEntry.projectPath,
+					sessionId,
+					projectPath,
 					inputTokens:
 						acc.inputTokens + (entry.data.message.usage.input_tokens ?? 0),
 					outputTokens:
@@ -362,18 +395,18 @@ export async function loadSessionData(
 						acc.cacheReadTokens
 						+ (entry.data.message.usage.cache_read_input_tokens ?? 0),
 					totalCost: acc.totalCost + entry.cost,
-					lastActivity: formatDate(latestEntry.timestamp),
+					lastActivity: formatDate(latestEntry.timestamp.toISOString()),
 					versions: Array.from(versionSet).sort(),
 				}),
 				{
-					sessionId: latestEntry.sessionId,
-					projectPath: latestEntry.projectPath,
+					sessionId,
+					projectPath,
 					inputTokens: 0,
 					outputTokens: 0,
 					cacheCreationTokens: 0,
 					cacheReadTokens: 0,
 					totalCost: 0,
-					lastActivity: formatDate(latestEntry.timestamp),
+					lastActivity: formatDate(latestEntry.timestamp.toISOString()),
 					versions: Array.from(versionSet).sort(),
 				},
 			);
